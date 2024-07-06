@@ -1,5 +1,8 @@
 ﻿# Test to see if each module is installed, load scripts as applicable
 
+$prefBackup = $WarningPreference
+$global:WarningPreference = 'SilentlyContinue'
+
 # Az
 if(!(Get-Module Az)){
     try{
@@ -20,7 +23,7 @@ if(!(Get-Module AzureAD)){
     catch{Write-Host -ForegroundColor DarkRed "AzureAD module not installed, checking other modules"}
 }
 
-# AzureRm
+<# AzureRm - Uncomment this section if you want to import the functions
 if(!(Get-Module AzureRM)){
     try{
         Import-Module AzureRM -ErrorAction Stop
@@ -30,7 +33,7 @@ if(!(Get-Module AzureRM)){
         # If Az is already installed, no need to warn on no AzureRM
         if($azStatus -ne "1"){Write-Host -ForegroundColor DarkRed "AzureRM module not installed, checking other modules"}
     }
-}
+}#>
 
 # MSOL
 if(!(Get-Module msonline)){
@@ -45,3 +48,5 @@ if(!(Get-Module msonline)){
 
 Import-Module $PSScriptRoot\Misc\MicroBurst-Misc.psm1
 Import-Module $PSScriptRoot\REST\MicroBurst-AzureREST.psm1
+
+$global:WarningPreference = $prefBackup

@@ -11,13 +11,6 @@
 #       Add a "Findings" file that lists out the specific bad config items
 
 
-# Check if the Az Module is installed and imported
-if(!(Get-Module Az)){
-    try{Import-Module Az -ErrorAction Stop}
-    catch{Install-Module -Name Az -Confirm}
-    }
-
-
 Function Get-AzDomainInfo
 {
 <#
@@ -196,7 +189,7 @@ Function Get-AzDomainInfo
         else{New-Item -ItemType Directory $folder"\Groups" | Out-Null}
 
         # Gather info to variable
-        $groupLists=Get-AzADGroup
+        $groupLists=Get-AzADGroup -WarningAction:SilentlyContinue
         $groupCount = $groupLists.Count
         Write-Verbose "`t$groupCount Domain Groups were found."
         Write-Verbose "Getting Domain Users for each group..."
@@ -212,7 +205,7 @@ Function Get-AzDomainInfo
             $charlist = [string[]][System.IO.Path]::GetInvalidFileNameChars()
             foreach ($char in $charlist){$groupName = $groupName.replace($char,'.')}
 
-            Get-AzADGroupMember -GroupObjectId $_.Id | Select-Object @{ Label = "Group Name"; Expression={$groupName}}, DisplayName, UserPrincipalName, Id | Export-Csv -NoTypeInformation -LiteralPath $folder"\Groups\"$groupName"_Users.CSV"
+            Get-AzADGroupMember -GroupObjectId $_.Id -WarningAction:SilentlyContinue | Select-Object @{ Label = "Group Name"; Expression={$groupName}}, DisplayName, UserPrincipalName, Id | Export-Csv -NoTypeInformation -LiteralPath $folder"\Groups\"$groupName"_Users.CSV"
             }
         Write-Verbose "`tDomain Group Users were enumerated for $groupCount groups."
     }

